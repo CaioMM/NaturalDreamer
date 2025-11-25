@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Normal, Bernoulli, Independent, OneHotCategoricalStraightThrough
+from torch.distributions import Normal, Bernoulli, Independent, OneHotCategoricalStraightThrough, Categorical
 from torch.distributions.utils import probs_to_logits
 from utils import sequentialModel1D
 
@@ -11,7 +11,6 @@ class RecurrentModel(nn.Module):
         super().__init__()
         self.config = config
         self.activation = getattr(nn, self.config.activation)()
-
         self.linear = nn.Linear(latentSize + actionSize, self.config.hiddenSize)
         self.recurrent = nn.GRUCell(self.config.hiddenSize, recurrentSize)
 
@@ -27,7 +26,7 @@ class PriorNet(nn.Module):
         self.latentClasses = latentClasses
         self.latentSize = latentLength*latentClasses
         self.network = sequentialModel1D(inputSize, [self.config.hiddenSize]*self.config.numLayers, self.latentSize, self.config.activation)
-    
+        
     def forward(self, x):
         rawLogits = self.network(x)
 
@@ -48,7 +47,7 @@ class PosteriorNet(nn.Module):
         self.latentClasses = latentClasses
         self.latentSize = latentLength*latentClasses
         self.network = sequentialModel1D(inputSize, [self.config.hiddenSize]*self.config.numLayers, self.latentSize, self.config.activation)
-    
+        
     def forward(self, x):
         rawLogits = self.network(x)
 
@@ -87,65 +86,97 @@ class EncoderConv(nn.Module):
         super().__init__()
         self.config = config
         activation = getattr(nn, self.config.activation)()
-        channels, height, width = inputShape
         self.outputSize = outputSize
 
-        self.convolutionalNet = nn.Sequential(
-            nn.Conv2d(channels,            self.config.depth*1, self.config.kernelSize, self.config.stride, padding=1), activation,
-            nn.Conv2d(self.config.depth*1, self.config.depth*2, self.config.kernelSize, self.config.stride, padding=1), activation,
-            nn.Conv2d(self.config.depth*2, self.config.depth*4, self.config.kernelSize, self.config.stride, padding=1), activation,
-            nn.Conv2d(self.config.depth*4, self.config.depth*8, self.config.kernelSize, self.config.stride, padding=1), activation,
-            nn.Flatten(),
-            nn.Linear(self.config.depth*8*(height // (self.config.stride ** 4))*(width // (self.config.stride ** 4)), outputSize), activation)
+        input_dim = inputShape[0] if isinstance(inputShape, (tuple, list)) else inputShape
+        hidden_dim = self.config.depth * 32
+        self.linearNet = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            activation,
+            # Final projection to latent space
+            nn.Linear(hidden_dim, outputSize),
+            activation # Preserving the activation at the end as per your original code
+        )
 
     def forward(self, x):
-        return self.convolutionalNet(x).view(-1, self.outputSize)
+        return self.linearNet(x).view(-1, self.outputSize)
 
 
 class DecoderConv(nn.Module):
     def __init__(self, inputSize, outputShape, config):
         super().__init__()
         self.config = config
-        self.channels, self.height, self.width = outputShape
         activation = getattr(nn, self.config.activation)()
 
+        # Handle outputShape being an int (52) or tuple (52,)
+        self.output_dim = outputShape[0] if isinstance(outputShape, (tuple, list)) else outputShape
+        
+        hidden_dim = self.config.depth * 32
         self.network = nn.Sequential(
-            nn.Linear(inputSize, self.config.depth*32),
-            nn.Unflatten(1, (self.config.depth*32, 1)),
-            nn.Unflatten(2, (1, 1)),
-            nn.ConvTranspose2d(self.config.depth*32, self.config.depth*4, self.config.kernelSize,     self.config.stride),    activation,
-            nn.ConvTranspose2d(self.config.depth*4,  self.config.depth*2, self.config.kernelSize,     self.config.stride),    activation,
-            nn.ConvTranspose2d(self.config.depth*2,  self.config.depth*1, self.config.kernelSize + 1, self.config.stride),    activation,
-            nn.ConvTranspose2d(self.config.depth*1,  self.channels,       self.config.kernelSize + 1, self.config.stride))
+            nn.Linear(inputSize, hidden_dim),
+            activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            activation,
+            # Final projection back to original input size (52)
+            nn.Linear(hidden_dim, self.output_dim) 
+            # No activation here to allow full range of values (matching original decoder logic)
+            )
 
     def forward(self, x):
         return self.network(x)
 
 
 class Actor(nn.Module):
-    def __init__(self, inputSize, actionSize, actionLow, actionHigh, device, config):
+    def __init__(self, inputSize, actionSize, actionDims, device, config):
         super().__init__()
-        actionSize *= 2
+        self.actionSize = actionSize
+        self.actionDims = actionDims
         self.config = config
         self.network = sequentialModel1D(inputSize, [self.config.hiddenSize]*self.config.numLayers, actionSize, self.config.activation)
-        self.register_buffer("actionScale", ((torch.tensor(actionHigh, device=device) - torch.tensor(actionLow, device=device)) / 2.0))
-        self.register_buffer("actionBias", ((torch.tensor(actionHigh, device=device) + torch.tensor(actionLow, device=device)) / 2.0))
+        self.register_buffer("actionDimensions", torch.tensor(actionDims, device=device))
 
     def forward(self, x, training=False):
-        logStdMin, logStdMax = -5, 2
-        mean, logStd = self.network(x).chunk(2, dim=-1)
-        logStd = logStdMin + (logStdMax - logStdMin)/2*(torch.tanh(logStd) + 1) # (-1, 1) to (min, max)
-        std = torch.exp(logStd)
+        # Get raw logits from the network
+        all_logits = self.network(x)
+        
+        # Split the logits based on the size of each discrete action dimension
+        # Example: splits a vector of size 8 into tensors of size [batch, 3] and [batch, 5]
+        logit_splits = torch.split(all_logits, self.actionDims, dim=-1)
+        
+        actions = []
+        log_probs = []
+        entropies = []
 
-        distribution = Normal(mean, std)
-        sample = distribution.sample()
-        sampleTanh = torch.tanh(sample)
-        action = sampleTanh*self.actionScale + self.actionBias
+        for logits in logit_splits:
+            dist = Categorical(logits=logits)
+            
+            if training:
+                # Sample based on probability during training
+                a = dist.sample()
+                actions.append(a)
+                log_probs.append(dist.log_prob(a))
+                entropies.append(dist.entropy())
+            else:
+                # Greedy selection (argmax) during inference/evaluation
+                a = torch.argmax(logits, dim=-1)
+                actions.append(a)
+
+        # Stack actions to shape (Batch, Num_Dimensions)
+        action = torch.stack(actions, dim=-1)
+
         if training:
-            logprobs = distribution.log_prob(sample)
-            logprobs -= torch.log(self.actionScale*(1 - sampleTanh.pow(2)) + 1e-6)
-            entropy = distribution.entropy()
-            return action, logprobs.sum(-1), entropy.sum(-1)
+            # Stack logprobs and entropies
+            log_probs = torch.stack(log_probs, dim=-1)
+            entropies = torch.stack(entropies, dim=-1)
+            
+            # Sum logprobs across dimensions (Independence assumption: P(a,b) = P(a)*P(b) -> log P = log a + log b)
+            return action, log_probs.sum(-1), entropies.sum(-1)
         else:
             return action
 

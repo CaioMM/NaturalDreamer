@@ -4,7 +4,8 @@ import argparse
 import os
 from dreamer    import Dreamer
 from utils      import loadConfig, seedEverything, plotMetrics
-from envs       import getEnvProperties, GymPixelsProcessingWrapper, CleanGymWrapper
+from envs       import getMultiDiscreteEnvProperties, GymPixelsProcessingWrapper, CleanGymWrapper
+from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv as Env
 from utils      import saveLossesToCSV, ensureParentFolders
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -21,13 +22,13 @@ def main(configFile):
     videoFilenameBase       = os.path.join(config.folderNames.videosFolder,         runName)
     ensureParentFolders(metricsFilename, plotFilename, checkpointFilenameBase, videoFilenameBase)
     
-    env             = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName), (64, 64))))
-    envEvaluation   = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName, render_mode="rgb_array"), (64, 64))))
+    env = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=10,lambda_max=5,debug=False,verbose=False,seed=42)
+    envEvaluation = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=10,lambda_max=5,debug=False,verbose=False,seed=42)
     
-    observationShape, actionSize, actionLow, actionHigh = getEnvProperties(env)
-    print(f"envProperties: obs {observationShape}, action size {actionSize}, actionLow {actionLow}, actionHigh {actionHigh}")
+    observationShape, actionSize, actionDims = getMultiDiscreteEnvProperties(env)
+    print(f"envProperties: obs {observationShape}, action size {actionSize}, actionDims {actionDims}")
 
-    dreamer = Dreamer(observationShape, actionSize, actionLow, actionHigh, device, config.dreamer)
+    dreamer = Dreamer(observationShape, actionSize, actionDims, device, config.dreamer)
     if config.resume:
         dreamer.loadCheckpoint(checkpointToLoad)
 
