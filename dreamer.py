@@ -179,6 +179,7 @@ class Dreamer:
             encodedObservation = self.encoder(torch.from_numpy(observation).float().unsqueeze(0).to(self.device))
 
             currentScore, stepCount, done, frames = 0, 0, False, []
+            action_history = []
             while not done:
                 recurrentState      = self.recurrentModel(recurrentState, latentState, action)
                 latentState, _      = self.posteriorNet(torch.cat((recurrentState, encodedObservation.view(1, -1)), -1))
@@ -187,6 +188,7 @@ class Dreamer:
                 actionNumpy     = action.cpu().numpy().reshape(-1)
                 actionOneHot = actionsToOneHot(actionNumpy, self.actionDims)
                 action = actionsToOneHot(action, self.actionDims)
+                action_history.append(actionNumpy.copy())
 
                 nextObservation, reward, done, _, _ = env.step(actionNumpy) # observation, -10.0, done, truncated, info
                 nextObservation, _ = flattenObservation(nextObservation)
@@ -208,6 +210,9 @@ class Dreamer:
                 currentScore += reward
                 stepCount += 1
                 if done:
+                    action_variety = len(np.unique(action_history, axis=0))
+                    print(f"Episode {i}: Steps={stepCount}, Score={currentScore:.2f}, Action variety={action_variety}/{stepCount}")
+                
                     scores.append(currentScore)
                     if not evaluation:
                         self.totalEpisodes += 1
