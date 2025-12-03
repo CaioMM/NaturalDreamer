@@ -8,6 +8,7 @@ from envs       import getMultiDiscreteEnvProperties, GymPixelsProcessingWrapper
 from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv as Env
 from utils      import saveLossesToCSV, ensureParentFolders
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 
 
 def main(configFile):
@@ -22,8 +23,8 @@ def main(configFile):
     videoFilenameBase       = os.path.join(config.folderNames.videosFolder,         runName)
     ensureParentFolders(metricsFilename, plotFilename, checkpointFilenameBase, videoFilenameBase)
     
-    env = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=10,lambda_max=5,debug=False,verbose=False,seed=42)
-    envEvaluation = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=10,lambda_max=5,debug=False,verbose=False,seed=42)
+    env = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=20,lambda_max=5,debug=False,verbose=False,seed=42)
+    envEvaluation = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=20,lambda_max=5,debug=False,verbose=False,seed=42)
     
     observationShape, actionSize, actionDims = getMultiDiscreteEnvProperties(env)
     print(f"envProperties: obs {observationShape}, action size {actionSize}, actionDims {actionDims}")
@@ -45,7 +46,7 @@ def main(configFile):
             if dreamer.totalGradientSteps % config.checkpointInterval == 0 and config.saveCheckpoints:
                 suffix = f"{dreamer.totalGradientSteps/1000:.0f}k"
                 dreamer.saveCheckpoint(f"{checkpointFilenameBase}_{suffix}")
-                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, seed=config.seed, evaluation=True, saveVideo=True, filename=f"{videoFilenameBase}_{suffix}")
+                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, seed=config.seed, evaluation=True, saveVideo=False, filename=f"{videoFilenameBase}_{suffix}")
                 print(f"Saved Checkpoint and Video at {suffix:>6} gradient steps. Evaluation score: {evaluationScore:>8.2f}")
 
         mostRecentScore = dreamer.environmentInteraction(env, config.numInteractionEpisodes, seed=config.seed)

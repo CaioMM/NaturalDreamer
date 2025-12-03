@@ -170,6 +170,7 @@ class Dreamer:
     @torch.no_grad()
     def environmentInteraction(self, env, numEpisodes, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
         scores = []
+        print(f"{'Evaluation' if evaluation else 'Interaction'}: Running {numEpisodes} episodes...")
         for i in range(numEpisodes):
             recurrentState, latentState = torch.zeros(1, self.recurrentSize, device=self.device), torch.zeros(1, self.latentSize, device=self.device)
             action = torch.zeros(1, self.actionSize).to(self.device)
@@ -190,7 +191,10 @@ class Dreamer:
                 action = actionsToOneHot(action, self.actionDims)
                 action_history.append(actionNumpy.copy())
 
-                nextObservation, reward, done, _, _ = env.step(actionNumpy) # observation, -10.0, done, truncated, info
+                nextObservation, reward, done, _, info = env.step(actionNumpy)
+                # print(f"Step {stepCount}: action={actionNumpy}, reward={reward}, done={done}")  # Debug line to check action, reward, and done status
+                # if 'termination_reason' in info:
+                #     print(f"Termination reason: {info['termination_reason']}")  # Debug line to check termination reason
                 nextObservation, _ = flattenObservation(nextObservation)
                 # print(f"nextObservation shape: {nextObservation.shape}")  # Debug line to check the shape of nextObservation
                 # print(f"nextObs values: {nextObservation}")  # Debug line to check the values of nextObservation
@@ -198,11 +202,11 @@ class Dreamer:
                 if not evaluation:
                     self.buffer.add(observation, actionOneHot, reward, nextObservation, done)
 
-                if False and i == 0:
+                if saveVideo and i == 0:
                     frame = env.render()
-                    # targetHeight = (frame.shape[0] + macroBlockSize - 1)//macroBlockSize*macroBlockSize # getting rid of imagio warning
-                    # targetWidth = (frame.shape[1] + macroBlockSize - 1)//macroBlockSize*macroBlockSize
-                    # frames.append(np.pad(frame, ((0, targetHeight - frame.shape[0]), (0, targetWidth - frame.shape[1]), (0, 0)), mode='edge'))
+                    targetHeight = (frame.shape[0] + macroBlockSize - 1)//macroBlockSize*macroBlockSize # getting rid of imagio warning
+                    targetWidth = (frame.shape[1] + macroBlockSize - 1)//macroBlockSize*macroBlockSize
+                    frames.append(np.pad(frame, ((0, targetHeight - frame.shape[0]), (0, targetWidth - frame.shape[1]), (0, 0)), mode='edge'))
                 
                 encodedObservation = self.encoder(torch.from_numpy(nextObservation).float().unsqueeze(0).to(self.device))
                 observation = nextObservation

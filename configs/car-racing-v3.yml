@@ -1,6 +1,6 @@
 environmentName: CarRacing-v3
 runName: YourRunName
-seed: 1
+seed: 42
 
 gradientSteps: 60000
 replayRatio: 100
@@ -10,9 +10,9 @@ checkpointInterval: 2000
 resume: False
 checkpointToLoad: 50k
 
-episodesBeforeStart: 50
-numInteractionEpisodes: 1
-numEvaluationEpisodes: 1
+episodesBeforeStart: 1000
+numInteractionEpisodes: 50
+numEvaluationEpisodes: 10
 
 dreamer:
     batchSize: 32
@@ -36,7 +36,7 @@ dreamer:
     freeNats: 1
     betaPrior: 1.0
     betaPosterior: 0.1
-    entropyScale: 0.0003
+    entropyScale: 0.01
 
     buffer:
         capacity: 50000
