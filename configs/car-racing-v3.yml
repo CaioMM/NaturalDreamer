@@ -1,28 +1,28 @@
 environmentName: CarRacing-v3
-runName: YourRunName
-seed: 42
+runName: run_03_reduced_network_dimensions
+seed: 1
 
 gradientSteps: 60000
-replayRatio: 100
+replayRatio: 10
 saveMetrics: True        # Saves metrics at replayRatio interval
 saveCheckpoints: True
 checkpointInterval: 2000
 resume: False
 checkpointToLoad: 50k
 
-episodesBeforeStart: 1000
-numInteractionEpisodes: 50
-numEvaluationEpisodes: 10
+episodesBeforeStart: 5
+numInteractionEpisodes: 1
+numEvaluationEpisodes: 1
 
 dreamer:
     batchSize: 32
-    batchLength: 64
+    batchLength: 32
     imaginationHorizon: 15
 
-    recurrentSize: 512
+    recurrentSize: 256
     latentLength: 16
     latentClasses: 16
-    encodedObsSize: 1024
+    encodedObsSize: 256
 
     useContinuationPrediction: False
     actorLR: 0.00004
@@ -36,22 +36,34 @@ dreamer:
     freeNats: 1
     betaPrior: 1.0
     betaPosterior: 0.1
-    entropyScale: 0.01
+    entropyScale: 0.0003
 
     buffer:
         capacity: 50000
 
-    encoder: 
-        depth: 16
-        stride: 2
-        kernelSize: 4
-        activation: Tanh
+    encoder:
+        Conv: 
+            depth: 16
+            stride: 2
+            kernelSize: 4
+            activation: Tanh
+    
+        MLP: 
+            hiddenSize: 256
+            numLayers: 2
+            activation: Tanh
 
-    decoder: 
-        depth: 16
-        stride: 2
-        kernelSize: 5
-        activation: Tanh
+    decoder:
+        Conv: 
+            depth: 16
+            stride: 2
+            kernelSize: 5
+            activation: Tanh
+
+        MLP: 
+            hiddenSize: 256
+            numLayers: 2
+            activation: Tanh
 
     recurrentModel: 
         hiddenSize: 200
@@ -80,12 +92,19 @@ dreamer:
         activation: Tanh
     
     actor:
-        hiddenSize: 400
-        numLayers: 2
-        activation: Tanh
+        continuous:
+            hiddenSize: 256
+            numLayers: 2
+            activation: Tanh
+        
+        multidiscrete:
+            hiddenSize: 256
+            numLayers: 2
+            activation: Tanh
+            uniformMix: 0.01
 
     critic: 
-        hiddenSize: 400
+        hiddenSize: 256
         numLayers: 3 
         activation: Tanh
 

@@ -4,12 +4,11 @@ import argparse
 import os
 from dreamer    import Dreamer
 from utils      import loadConfig, seedEverything, plotMetrics
-from envs       import getMultiDiscreteEnvProperties, GymPixelsProcessingWrapper, CleanGymWrapper
-from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv as Env
+from envs       import getEnvProperties, GymPixelsProcessingWrapper, CleanGymWrapper
 from utils      import saveLossesToCSV, ensureParentFolders
+from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cpu")
-
 
 def main(configFile):
     config = loadConfig(configFile)
@@ -23,18 +22,26 @@ def main(configFile):
     videoFilenameBase       = os.path.join(config.folderNames.videosFolder,         runName)
     ensureParentFolders(metricsFilename, plotFilename, checkpointFilenameBase, videoFilenameBase)
     
-    env = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=20,lambda_max=5,debug=False,verbose=False,seed=42)
-    envEvaluation = Env(num_uavs=2,num_endnodes=7,max_episode_steps=100,grid_size=20,lambda_max=5,debug=False,verbose=False,seed=42)
+    env             = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName), (64, 64))))
+    envEvaluation   = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName, render_mode="rgb_array"), (64, 64))))
     
-    observationShape, actionSize, actionDims = getMultiDiscreteEnvProperties(env)
-    print(f"envProperties: obs {observationShape}, action size {actionSize}, actionDims {actionDims}")
+    env1 = UavUfpaEnv(num_uavs=2, num_endnodes=7, grid_size=10, lambda_max=5, debug=False, evaluate_mode=True, seed=42)
+    envEvaluation1 = UavUfpaEnv(num_uavs=2, num_endnodes=7, grid_size=10, lambda_max=5, debug=False, evaluate_mode=True, seed=42)
+    env = env1
+    envEvaluation = envEvaluation1
+    observationShape, actionSize, actionLow, actionHigh, actionType = getEnvProperties(env1)
+    # print(f"env1 Properties: obs {observationShape}, action size {actionSize}, actionLow {actionLow}, actionHigh {actionHigh}")
 
-    dreamer = Dreamer(observationShape, actionSize, actionDims, device, config.dreamer)
+    # observationShape, actionSize, actionLow, actionHigh = getEnvProperties(env)
+    print(f"Device: {device} | envProperties: obs {observationShape}, action size {actionSize}, actionLow {actionLow}, actionHigh {actionHigh}, actionType {actionType}")
+
+    dreamer = Dreamer(observationShape, actionSize, actionLow, actionHigh, actionType, device, config.dreamer)
+    
     if config.resume:
         dreamer.loadCheckpoint(checkpointToLoad)
 
     dreamer.environmentInteraction(env, config.episodesBeforeStart, seed=config.seed)
-
+    
     iterationsNum = config.gradientSteps // config.replayRatio
     for _ in range(iterationsNum):
         for _ in range(config.replayRatio):
@@ -46,7 +53,7 @@ def main(configFile):
             if dreamer.totalGradientSteps % config.checkpointInterval == 0 and config.saveCheckpoints:
                 suffix = f"{dreamer.totalGradientSteps/1000:.0f}k"
                 dreamer.saveCheckpoint(f"{checkpointFilenameBase}_{suffix}")
-                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, seed=config.seed, evaluation=True, saveVideo=False, filename=f"{videoFilenameBase}_{suffix}")
+                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, seed=config.seed, evaluation=True, saveVideo=True, filename=f"{videoFilenameBase}_{suffix}")
                 print(f"Saved Checkpoint and Video at {suffix:>6} gradient steps. Evaluation score: {evaluationScore:>8.2f}")
 
         mostRecentScore = dreamer.environmentInteraction(env, config.numInteractionEpisodes, seed=config.seed)

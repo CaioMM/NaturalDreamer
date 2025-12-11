@@ -9,8 +9,8 @@ class ReplayBuffer(object):
         self.device = device
         self.capacity = int(self.config.capacity)
 
-        self.observations        = np.empty((self.capacity, observation_shape), dtype=np.float32)
-        self.nextObservations   = np.empty((self.capacity, observation_shape), dtype=np.float32)
+        self.observations        = np.empty((self.capacity, *observation_shape), dtype=np.float32)
+        self.nextObservations   = np.empty((self.capacity, *observation_shape), dtype=np.float32)
         self.actions             = np.empty((self.capacity, actions_size), dtype=np.float32)
         self.rewards             = np.empty((self.capacity, 1), dtype=np.float32)
         self.dones               = np.empty((self.capacity, 1), dtype=np.float32)

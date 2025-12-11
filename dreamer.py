@@ -4,30 +4,30 @@ from torch.distributions import kl_divergence, Independent, OneHotCategoricalStr
 import numpy as np
 import os
 
-from networks import RecurrentModel, PriorNet, PosteriorNet, RewardModel, ContinueModel, EncoderConv, DecoderConv, Actor, Critic
+from networks import RecurrentModel, PriorNet, PosteriorNet, RewardModel, ContinueModel, Encoder, Decoder, Actor, Critic
 from utils import computeLambdaValues, Moments
 from buffer import ReplayBuffer
-from envs import flattenObservation, actionsToOneHot, oneHotToActions
+from envs import flattenObservation
+import gymnasium as gym
 import imageio
 
 
 class Dreamer:
-    def __init__(self, observationShape, actionSize, actionDims, device, config):
+    def __init__(self, observationShape, actionSize, actionLow, actionHigh, actionType, device, config):
         self.observationShape   = observationShape
         self.actionSize         = actionSize
-        self.actionDims         = actionDims
         self.config             = config
         self.device             = device
-
+        self.actionType         = actionType
         self.recurrentSize  = config.recurrentSize
         self.latentSize     = config.latentLength*config.latentClasses
         self.fullStateSize  = config.recurrentSize + self.latentSize
 
-        self.actor           = Actor(self.fullStateSize, actionSize, actionDims, device,                                  config.actor          ).to(self.device)
+        self.actor           = Actor(self.fullStateSize, actionSize, actionLow, actionHigh, actionType, device,                                  config.actor          ).to(self.device)
         self.critic          = Critic(self.fullStateSize,                                                                            config.critic         ).to(self.device)
-        self.encoder         = EncoderConv(observationShape, self.config.encodedObsSize,                                             config.encoder        ).to(self.device)
-        self.decoder         = DecoderConv(self.fullStateSize, observationShape,                                                     config.decoder        ).to(self.device)
-        self.recurrentModel  = RecurrentModel(config.recurrentSize, self.latentSize, actionSize,                                     config.recurrentModel ).to(self.device)
+        self.encoder         = Encoder(observationShape, self.config.encodedObsSize,                                                 config.encoder        ).to(self.device)
+        self.decoder         = Decoder(self.fullStateSize, observationShape,                                                     config.decoder        ).to(self.device)
+        self.recurrentModel  = RecurrentModel(config.recurrentSize, self.latentSize, actionSize, config.recurrentModel, actionType, actionHigh ).to(self.device)
         self.priorNet        = PriorNet(config.recurrentSize, config.latentLength, config.latentClasses,                             config.priorNet       ).to(self.device)
         self.posteriorNet    = PosteriorNet(config.recurrentSize + config.encodedObsSize, config.latentLength, config.latentClasses, config.posteriorNet   ).to(self.device)
         self.rewardPredictor = RewardModel(self.fullStateSize,                                                                       config.reward         ).to(self.device)
@@ -52,7 +52,7 @@ class Dreamer:
 
 
     def worldModelTraining(self, data):
-        encodedObservations = self.encoder(data.observations.view(-1, self.observationShape)).view(self.config.batchSize, self.config.batchLength, -1)
+        encodedObservations = self.encoder(data.observations.view(-1, *self.observationShape)).view(self.config.batchSize, self.config.batchLength, -1)
         previousRecurrentState  = torch.zeros(self.config.batchSize, self.recurrentSize,    device=self.device)
         previousLatentState     = torch.zeros(self.config.batchSize, self.latentSize,       device=self.device)
 
@@ -76,9 +76,9 @@ class Dreamer:
         posteriorsLogits            = torch.stack(posteriorsLogits,             dim=1) # (batchSize, batchLength-1, latentLength, latentClasses)
         fullStates                  = torch.cat((recurrentStates, posteriors), dim=-1) # (batchSize, batchLength-1, recurrentSize + latentLength*latentClasses)
 
-        reconstructionMeans =  self.decoder(fullStates.view(-1, self.fullStateSize))
-        reconstructionDistribution =  Independent(Normal(reconstructionMeans, 0.1), 1)
-        reconstructionLoss         = -reconstructionDistribution.log_prob(data.observations[:, 1:].reshape(-1, self.observationShape)).mean()
+        reconstructionMeans        =  self.decoder(fullStates.view(-1, self.fullStateSize)).view(self.config.batchSize, self.config.batchLength-1, *self.observationShape)
+        reconstructionDistribution =  Independent(Normal(reconstructionMeans, 1), len(self.observationShape))
+        reconstructionLoss         = -reconstructionDistribution.log_prob(data.observations[:, 1:]).mean()
 
         rewardDistribution  =  self.rewardPredictor(fullStates)
         rewardLoss          = -rewardDistribution.log_prob(data.rewards[:, 1:].squeeze(-1)).mean()
@@ -97,6 +97,9 @@ class Dreamer:
         klLoss          = (priorLoss + posteriorLoss).mean()
 
         worldModelLoss =  reconstructionLoss + rewardLoss + klLoss # I think that the reconstruction loss is relatively a bit too high (11k) 
+
+        print(f"Gradient Steps: {self.totalGradientSteps} | World model loss: {worldModelLoss.item():.4f} | reconstruction loss: {reconstructionLoss.item():.4f} | reward loss: {rewardLoss.item():.4f} | KL loss: {klLoss.item():.4f} ")
+        
         
         if self.config.useContinuationPrediction:
             continueDistribution = self.continuePredictor(fullStates)
@@ -122,7 +125,9 @@ class Dreamer:
         fullStates, logprobs, entropies = [], [], []
         for _ in range(self.config.imaginationHorizon):
             action, logprob, entropy = self.actor(fullState.detach(), training=True)
-            action = actionsToOneHot(action, self.actionDims)
+            # In training loop, after actor samples action:
+            # print(f"Action shape: {action.shape}, dtype: {action.dtype}")
+            # print(f"Action sample: {action[0]}")  # Should be integers like [2, 4, 1, 0]
             recurrentState = self.recurrentModel(recurrentState, latentState, action)
             latentState, _ = self.priorNet(recurrentState)
 
@@ -170,53 +175,51 @@ class Dreamer:
     @torch.no_grad()
     def environmentInteraction(self, env, numEpisodes, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
         scores = []
-        print(f"{'Evaluation' if evaluation else 'Interaction'}: Running {numEpisodes} episodes...")
         for i in range(numEpisodes):
             recurrentState, latentState = torch.zeros(1, self.recurrentSize, device=self.device), torch.zeros(1, self.latentSize, device=self.device)
             action = torch.zeros(1, self.actionSize).to(self.device)
 
             observation, _ = env.reset(seed= (seed + self.totalEpisodes if seed else None))
-            observation, _ = flattenObservation(observation)
+            if isinstance(observation, dict):
+                observation = flattenObservation(observation)
+            
             encodedObservation = self.encoder(torch.from_numpy(observation).float().unsqueeze(0).to(self.device))
-
+            # print(f"Initial observation shape: {observation.shape}, encoded shape: {encodedObservation.shape}")
+            
             currentScore, stepCount, done, frames = 0, 0, False, []
-            action_history = []
             while not done:
                 recurrentState      = self.recurrentModel(recurrentState, latentState, action)
-                latentState, _      = self.posteriorNet(torch.cat((recurrentState, encodedObservation.view(1, -1)), -1))
-
-                action          = self.actor(torch.cat((recurrentState, latentState), -1))                
-                actionNumpy     = action.cpu().numpy().reshape(-1)
-                actionOneHot = actionsToOneHot(actionNumpy, self.actionDims)
-                action = actionsToOneHot(action, self.actionDims)
-                action_history.append(actionNumpy.copy())
-
-                nextObservation, reward, done, _, info = env.step(actionNumpy)
-                # print(f"Step {stepCount}: action={actionNumpy}, reward={reward}, done={done}")  # Debug line to check action, reward, and done status
-                # if 'termination_reason' in info:
-                #     print(f"Termination reason: {info['termination_reason']}")  # Debug line to check termination reason
-                nextObservation, _ = flattenObservation(nextObservation)
-                # print(f"nextObservation shape: {nextObservation.shape}")  # Debug line to check the shape of nextObservation
-                # print(f"nextObs values: {nextObservation}")  # Debug line to check the values of nextObservation
+                # print(f"Recurrent state shape: {recurrentState.shape}")
                 
+                latentState, _      = self.posteriorNet(torch.cat((recurrentState, encodedObservation.view(1, -1)), -1))
+                # print(f"Latent state shape: {latentState.shape}")
+                action          = self.actor(torch.cat((recurrentState, latentState), -1))
+                # print(f"Action shape: {action.shape} | Action: {action}")
+                actionNumpy     = action.cpu().numpy().reshape(-1)
+                
+                nextObservation, reward, done, truncated, info = env.step(actionNumpy)
+                done = done or truncated
+                # print(f"Step {stepCount}: reward {reward}, done {done}")
+                if isinstance(nextObservation, dict):
+                    nextObservation = flattenObservation(nextObservation)
                 if not evaluation:
-                    self.buffer.add(observation, actionOneHot, reward, nextObservation, done)
-
+                    self.buffer.add(observation, actionNumpy, reward, nextObservation, done)
+                # frame = env.render()
+                # print(frame.shape, frame.dtype)
+                # return -1
                 if saveVideo and i == 0:
                     frame = env.render()
                     targetHeight = (frame.shape[0] + macroBlockSize - 1)//macroBlockSize*macroBlockSize # getting rid of imagio warning
                     targetWidth = (frame.shape[1] + macroBlockSize - 1)//macroBlockSize*macroBlockSize
                     frames.append(np.pad(frame, ((0, targetHeight - frame.shape[0]), (0, targetWidth - frame.shape[1]), (0, 0)), mode='edge'))
-                
+
                 encodedObservation = self.encoder(torch.from_numpy(nextObservation).float().unsqueeze(0).to(self.device))
+                # print(f"Next observation shape: {nextObservation.shape}, encoded shape: {encodedObservation.shape}")
                 observation = nextObservation
                 
                 currentScore += reward
                 stepCount += 1
                 if done:
-                    action_variety = len(np.unique(action_history, axis=0))
-                    print(f"Episode {i}: Steps={stepCount}, Score={currentScore:.2f}, Action variety={action_variety}/{stepCount}")
-                
                     scores.append(currentScore)
                     if not evaluation:
                         self.totalEpisodes += 1
@@ -278,4 +281,3 @@ class Dreamer:
         self.totalGradientSteps = checkpoint['totalGradientSteps']
         if self.config.useContinuationPrediction:
             self.continuePredictor.load_state_dict(checkpoint['continuePredictor'])
-
