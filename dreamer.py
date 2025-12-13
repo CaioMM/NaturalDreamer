@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import kl_divergence, Independent, OneHotCategoricalStraightThrough, Normal
 import numpy as np
 import os
+from scipy import stats
 
 from networks import RecurrentModel, PriorNet, PosteriorNet, RewardModel, ContinueModel, Encoder, Decoder, Actor, Critic
 from utils import computeLambdaValues, Moments
@@ -10,6 +11,8 @@ from buffer import ReplayBuffer
 from envs import flattenObservation
 import gymnasium as gym
 import imageio
+import matplotlib.pyplot as plt
+from collections import Counter
 
 
 class Dreamer:
@@ -173,13 +176,13 @@ class Dreamer:
 
 
     @torch.no_grad()
-    def environmentInteraction(self, env, numEpisodes, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
+    def environmentInteraction(self, env, numEpisodes, resetSeed, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
         scores = []
         for i in range(numEpisodes):
             recurrentState, latentState = torch.zeros(1, self.recurrentSize, device=self.device), torch.zeros(1, self.latentSize, device=self.device)
             action = torch.zeros(1, self.actionSize).to(self.device)
 
-            observation, _ = env.reset(seed= (seed + self.totalEpisodes if seed else None))
+            observation, _ = env.reset(seed=resetSeed)
             if isinstance(observation, dict):
                 observation = flattenObservation(observation)
             
@@ -197,7 +200,7 @@ class Dreamer:
                 # print(f"Action shape: {action.shape} | Action: {action}")
                 actionNumpy     = action.cpu().numpy().reshape(-1)
                 
-                nextObservation, reward, done, truncated, info = env.step(actionNumpy)
+                nextObservation, reward, done, truncated, _ = env.step(actionNumpy)
                 done = done or truncated
                 # print(f"Step {stepCount}: reward {reward}, done {done}")
                 if isinstance(nextObservation, dict):
@@ -231,6 +234,156 @@ class Dreamer:
                             for frame in frames:
                                 video.append_data(frame)
                     break
+        return sum(scores)/numEpisodes if numEpisodes else None
+    
+    @torch.no_grad()
+    def environmentInteractionEvaluation(self, env, numEpisodes, model_identifier, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
+        scores = []
+        max_steps = env.max_episode_steps
+        # variables to track performance
+        coverage = np.zeros((numEpisodes, max_steps))
+        energy_efficiency = np.zeros((numEpisodes, max_steps))
+        reward_per_step = np.zeros((numEpisodes, max_steps))
+
+        transmission_power = np.zeros((env.num_uavs, numEpisodes, max_steps))
+        spreading_factors = np.zeros((env.num_uavs, numEpisodes, max_steps))
+        bandwidths = np.zeros((env.num_uavs, numEpisodes, max_steps))
+
+        grid_positions = np.zeros((env.num_uavs, numEpisodes, max_steps))
+        positions = np.zeros((env.num_uavs, numEpisodes, 2)) # Initial grid and final grid for each UAV
+        duration_per_episode = np.zeros(numEpisodes)
+
+        power_consumption = np.zeros((numEpisodes, max_steps))
+        for i in range(numEpisodes):
+            recurrentState, latentState = torch.zeros(1, self.recurrentSize, device=self.device), torch.zeros(1, self.latentSize, device=self.device)
+            action = torch.zeros(1, self.actionSize).to(self.device)
+
+            observation, info = env.reset(seed=i)
+            positions[:, i, 0] = [uav.grid_id for uav in env.uavs]  # initial grid positions
+            if isinstance(observation, dict):
+                observation = flattenObservation(observation)
+            
+            encodedObservation = self.encoder(torch.from_numpy(observation).float().unsqueeze(0).to(self.device))
+            
+            currentScore, stepCount, done, frames = 0, 0, False, []
+            while not done:
+                coverage[i, stepCount] = info['total_coverage']
+                energy_efficiency[i, stepCount] = info['global_ee']
+                if energy_efficiency[i, stepCount] < 0:
+                    energy_efficiency[i, stepCount] = 0
+                
+                power_consumption[i, stepCount] = np.array([(10 ** (uav.tp / 10) / 1000) * len(uav.associated_endnodes) for uav in env.uavs]).sum()
+
+                transmission_power[:, i, stepCount] = [uav.tp for uav in env.uavs]
+                spreading_factors[:, i, stepCount] = [uav.sf for uav in env.uavs]
+                bandwidths[:, i, stepCount] = [uav.bw for uav in env.uavs]
+
+                grid_positions[:, i, stepCount] = [uav.grid_id for uav in env.uavs]
+
+                recurrentState      = self.recurrentModel(recurrentState, latentState, action)                
+                latentState, _      = self.posteriorNet(torch.cat((recurrentState, encodedObservation.view(1, -1)), -1))
+                action          = self.actor(torch.cat((recurrentState, latentState), -1))
+                actionNumpy     = action.cpu().numpy().reshape(-1)
+                
+                nextObservation, reward, done, truncated, info = env.step(actionNumpy)
+                done = done or truncated
+                if isinstance(nextObservation, dict):
+                    nextObservation = flattenObservation(nextObservation)
+                if not evaluation:
+                    self.buffer.add(observation, actionNumpy, reward, nextObservation, done)
+
+                encodedObservation = self.encoder(torch.from_numpy(nextObservation).float().unsqueeze(0).to(self.device))
+                observation = nextObservation
+                
+                reward_per_step[i, stepCount] = reward
+                currentScore += reward
+                stepCount += 1
+                if done:
+                    scores.append(currentScore)
+                    if not evaluation:
+                        self.totalEpisodes += 1
+                        self.totalEnvSteps += stepCount
+                    break
+            positions[:, i, 1] = [uav.grid_id for uav in env.uavs]  # final grid positions
+            duration_per_episode[i] = stepCount
+
+        print(f'Average Duration over {numEpisodes} episodes: {np.mean(duration_per_episode):.2f} steps')
+        print(f'Average Reward per Step: {np.mean(reward_per_step[:, :]):.2f}')
+        print(f'Average Coverage: {np.mean(coverage[:, :] * 100):.2f} %')
+        print(f'Average Energy Efficiency: {np.mean(energy_efficiency[:, :]):.2f} bits/Joule')
+        print(f'Average Power Consumption per Step: {np.mean(power_consumption[:, :]):.2f} W')
+
+        print(f'UAV 1 Position Usage Statistics:')
+        print(f'  Initial Positions: {stats.mode(positions[0, :, 0])}')
+        print(f'  Final Positions: {stats.mode(positions[0, :, 1])}')
+        print(f'UAV 2 Position Usage Statistics:')
+        print(f'  Initial Positions: {stats.mode(positions[1, :, 0])}')
+        print(f'  Final Positions: {stats.mode(positions[1, :, 1])}')
+
+        # Plot histogram of grid position usage for each UAV in the same figure using subplots
+        fig, axs = plt.subplots(env.num_uavs, 1, sharex=True)
+        for uav_idx in range(env.num_uavs):
+            initial_positions = positions[uav_idx, :, 0]
+            final_positions = positions[uav_idx, :, 1]
+            initial_counts = Counter(initial_positions)
+            final_counts = Counter(final_positions)
+            
+            initial_list = list(initial_counts.keys())
+            final_list = list(final_counts.keys())
+
+            # plot initial positions
+            axs[uav_idx].bar([pos - 0.2 for pos in initial_list], [initial_counts[pos] for pos in initial_list], width=0.4, label='Initial Positions', alpha=0.7)
+            # plot final positions
+            axs[uav_idx].bar([pos + 0.2 for pos in final_list], [final_counts[pos] for pos in final_list], width=0.4, label='Final Positions', alpha=0.7)
+            axs[uav_idx].set_ylabel(f'UAV {uav_idx + 1} Counts')
+            axs[uav_idx].legend()
+            axs[uav_idx].grid()
+
+        plt.suptitle(f'Grid Position Usage per UAV - Model: {model_identifier}')
+        plt.xticks(np.arange(0, 101, 5))
+        plt.xlabel('Grid Position ID')
+        plt.tight_layout()
+        plt.savefig(f'./plots/dreamer_{model_identifier}_grid_position_usage.png')
+        plt.close()
+
+        # Create first subplot for power consumption
+        plt.figure()
+        mean_power = np.mean(power_consumption, axis=0)
+        std_power = np.std(power_consumption, axis=0)
+        plt.fill_between(range(max_steps), mean_power - std_power, mean_power + std_power, alpha=0.2)
+        plt.plot(range(max_steps), mean_power, label='Power Consumption', color='red')
+        plt.xlabel('Steps')
+        plt.ylabel('Power Consumption (W)')
+        plt.title(f'Power Consumption over Steps - Model: {model_identifier}')
+        plt.legend()
+        plt.grid()
+        plt.savefig(f'./plots/dreamer_{model_identifier}_power_consumption.png')
+
+        # plot coverage mean and std over episodes per step considering only episodes that reached max steps
+        mean_coverage = np.mean(coverage, axis=0)
+        std_coverage = np.std(coverage, axis=0)
+        plt.figure()
+        plt.fill_between(range(max_steps), mean_coverage - std_coverage, mean_coverage + std_coverage, alpha=0.2)
+        plt.plot(range(max_steps), mean_coverage, label='Coverage')
+        plt.xlabel('Steps')
+        plt.ylabel('Coverage')
+        plt.title(f'Coverage over Steps - Model: {model_identifier}')
+        plt.legend()
+        plt.grid()
+        plt.savefig(f'./plots/dreamer_{model_identifier}_coverage.png')
+
+        # plot energy efficiency mean and std over episodes per step
+        mean_energy_efficiency = np.mean(energy_efficiency, axis=0)
+        std_energy_efficiency = np.std(energy_efficiency, axis=0)
+        plt.figure()
+        plt.fill_between(range(max_steps), mean_energy_efficiency - std_energy_efficiency, mean_energy_efficiency + std_energy_efficiency, alpha=0.2)
+        plt.plot(range(max_steps), mean_energy_efficiency, label='Energy Efficiency', color='orange')
+        plt.xlabel('Steps')
+        plt.ylabel('Energy Efficiency (bits/Joule)')
+        plt.title(f'Energy Efficiency over Steps - Model: {model_identifier}')
+        plt.legend()
+        plt.grid()
+        plt.savefig(f'./plots/dreamer_{model_identifier}_energy_efficiency.png')
         return sum(scores)/numEpisodes if numEpisodes else None
     
 

@@ -1,5 +1,5 @@
 environmentName: CarRacing-v3
-runName: run_03_reduced_network_dimensions
+runName: run_04_reduced_network_dimensions_env_reset_fixed
 seed: 1
 
 gradientSteps: 60000
