@@ -8,7 +8,7 @@ from envs       import getEnvProperties, GymPixelsProcessingWrapper, CleanGymWra
 from utils      import saveLossesToCSV, ensureParentFolders
 from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
+# device = torch.device("cpu")
 
 def main(configFile, episodes=100, checkpointFile=None, resume=True):
     assert checkpointFile is not None, "Please provide checkpointFile as argument to main function."
@@ -31,6 +31,7 @@ def main(configFile, episodes=100, checkpointFile=None, resume=True):
         print(f"Loading checkpoint from: {checkpointToLoad}")
         dreamer.loadCheckpoint(checkpointToLoad)
         model_identifier = checkpointToLoad.split('/')[-1]
+        print(f"checkpoint loaded model identifier: {model_identifier}")
 
     
 
