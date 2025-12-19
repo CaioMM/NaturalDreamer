@@ -1,5 +1,6 @@
 import gymnasium as gym
 import torch
+import numpy as np
 import argparse
 import os
 from dreamer    import Dreamer
@@ -38,9 +39,12 @@ def main(configFile):
     dreamer = Dreamer(observationShape, actionSize, actionLow, actionHigh, actionType, device, config.dreamer)
     
     if config.resume:
+        print(f"Loading Checkpoint: {checkpointToLoad}")
         dreamer.loadCheckpoint(checkpointToLoad)
 
-    dreamer.environmentInteraction(env, config.episodesBeforeStart, resetSeed=0, seed=config.seed)
+    for _ in range(config.episodesBeforeStart):
+        i = np.random.randint(0, 10000)
+        dreamer.environmentInteraction(env, 1, resetSeed=i, seed=config.seed)
     
     iterationsNum = config.gradientSteps // config.replayRatio
     for i in range(iterationsNum):
@@ -53,10 +57,10 @@ def main(configFile):
             if dreamer.totalGradientSteps % config.checkpointInterval == 0 and config.saveCheckpoints:
                 suffix = f"{dreamer.totalGradientSteps/1000:.0f}k"
                 dreamer.saveCheckpoint(f"{checkpointFilenameBase}_{suffix}")
-                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, resetSeed=int(i*j), seed=config.seed, evaluation=True, saveVideo=True, filename=f"{videoFilenameBase}_{suffix}")
+                evaluationScore = dreamer.environmentInteraction(envEvaluation, config.numEvaluationEpisodes, resetSeed=int((i * 10) + j), seed=config.seed, evaluation=True, saveVideo=True, filename=f"{videoFilenameBase}_{suffix}")
                 print(f"Saved Checkpoint and Video at {suffix:>6} gradient steps. Evaluation score: {evaluationScore:>8.2f}")
 
-        mostRecentScore = dreamer.environmentInteraction(env, config.numInteractionEpisodes, resetSeed=int(i*j), seed=config.seed)
+        mostRecentScore = dreamer.environmentInteraction(env, config.numInteractionEpisodes, resetSeed=int((i * 10) + j), seed=config.seed)
         if config.saveMetrics:
             metricsBase = {"envSteps": dreamer.totalEnvSteps, "gradientSteps": dreamer.totalGradientSteps, "totalReward" : mostRecentScore}
             saveLossesToCSV(metricsFilename, metricsBase | worldModelMetrics | behaviorMetrics)
