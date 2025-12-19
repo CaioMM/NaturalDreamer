@@ -85,6 +85,11 @@ class Dreamer:
 
         rewardDistribution  =  self.rewardPredictor(fullStates)
         rewardLoss          = -rewardDistribution.log_prob(data.rewards[:, 1:].squeeze(-1)).mean()
+        # # After computing reward loss:
+        # print(f"Reward prediction:")
+        # print(f"  True rewards: min={data.rewards[:, 1:].min():.4f}, max={data.rewards[:, 1:].max():.4f}, mean={data.rewards[:, 1:].mean():.4f}")
+        # print(f"  Predicted rewards: min={rewardDistribution.mean.min():.4f}, max={rewardDistribution.mean.max():.4f}, mean={rewardDistribution.mean.mean():.4f}")
+        # # print(f"  Prediction error: {(rewardDistribution.mean - data.rewards[:, 1:]).abs().mean():.4f}")
 
         priorDistribution       = Independent(OneHotCategoricalStraightThrough(logits=priorsLogits              ), 1)
         priorDistributionSG     = Independent(OneHotCategoricalStraightThrough(logits=priorsLogits.detach()     ), 1)
@@ -183,6 +188,7 @@ class Dreamer:
             action = torch.zeros(1, self.actionSize).to(self.device)
 
             observation, _ = env.reset(seed=resetSeed)
+            # print(f"uav positions at reset: {[uav.grid_id for uav in env.uavs]}")
             if isinstance(observation, dict):
                 observation = flattenObservation(observation)
             
@@ -237,7 +243,7 @@ class Dreamer:
         return sum(scores)/numEpisodes if numEpisodes else None
     
     @torch.no_grad()
-    def environmentInteractionEvaluation(self, env, numEpisodes, model_identifier, seed=None, evaluation=False, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
+    def environmentInteractionEvaluation(self, env, numEpisodes, model_identifier, seed=None, evaluation=True, saveVideo=False, filename="videos/unnamedVideo", fps=30, macroBlockSize=16):
         scores = []
         max_steps = env.max_episode_steps
         # variables to track performance
@@ -266,21 +272,30 @@ class Dreamer:
             encodedObservation = self.encoder(torch.from_numpy(observation).float().unsqueeze(0).to(self.device))
             
             currentScore, stepCount, done, frames = 0, 0, False, []
+            prediction_errors = []
             while not done:
+
+                # Logging performance metrics
                 coverage[i, stepCount] = info['total_coverage']
                 energy_efficiency[i, stepCount] = info['global_ee']
                 if energy_efficiency[i, stepCount] < 0:
                     energy_efficiency[i, stepCount] = 0
-                
                 power_consumption[i, stepCount] = np.array([(10 ** (uav.tp / 10) / 1000) * len(uav.associated_endnodes) for uav in env.uavs]).sum()
-
                 transmission_power[:, i, stepCount] = [uav.tp for uav in env.uavs]
                 spreading_factors[:, i, stepCount] = [uav.sf for uav in env.uavs]
                 bandwidths[:, i, stepCount] = [uav.bw for uav in env.uavs]
-
                 grid_positions[:, i, stepCount] = [uav.grid_id for uav in env.uavs]
 
-                recurrentState      = self.recurrentModel(recurrentState, latentState, action)                
+                # world model prediction before stepping the environment
+                with torch.no_grad():
+                    recurrentState = self.recurrentModel(recurrentState, latentState, action)
+                    predicted_latent, _ = self.priorNet(recurrentState)
+                    fullStatePredicted = torch.cat((recurrentState, predicted_latent), dim=-1)
+                    predicted_next_obs = self.decoder(fullStatePredicted.view(-1, self.fullStateSize))
+                    predicted_next_obs = predicted_next_obs.view(1, *self.observationShape)
+
+                # actual environment step
+                # recurrentState      = self.recurrentModel(recurrentState, latentState, action)                
                 latentState, _      = self.posteriorNet(torch.cat((recurrentState, encodedObservation.view(1, -1)), -1))
                 action          = self.actor(torch.cat((recurrentState, latentState), -1))
                 actionNumpy     = action.cpu().numpy().reshape(-1)
@@ -292,13 +307,21 @@ class Dreamer:
                 if not evaluation:
                     self.buffer.add(observation, actionNumpy, reward, nextObservation, done)
 
+                # compute prediction error
+                actual_next_obs_tensor = torch.from_numpy(nextObservation).float().to(self.device)
+                prediction_error = (predicted_next_obs.squeeze(0).cpu() - nextObservation).pow(2).mean()
+                prediction_errors.append(prediction_error.item())
+
                 encodedObservation = self.encoder(torch.from_numpy(nextObservation).float().unsqueeze(0).to(self.device))
+                # print(f"Step count {stepCount} prediction error: {prediction_error:.4f}") 
                 observation = nextObservation
                 
                 reward_per_step[i, stepCount] = reward
                 currentScore += reward
                 stepCount += 1
                 if done:
+                    avg_prediction_error = np.mean(prediction_errors)
+                    # print(f"Episode {i} finished. Average Prediction Error: {avg_prediction_error:.4f} | Standard Deviation: {np.std(prediction_errors):.4f}")
                     scores.append(currentScore)
                     if not evaluation:
                         self.totalEpisodes += 1
@@ -319,7 +342,7 @@ class Dreamer:
         print(f'UAV 2 Position Usage Statistics:')
         print(f'  Initial Positions: {stats.mode(positions[1, :, 0])}')
         print(f'  Final Positions: {stats.mode(positions[1, :, 1])}')
-
+        # return -1
         # Plot histogram of grid position usage for each UAV in the same figure using subplots
         fig, axs = plt.subplots(env.num_uavs, 1, sharex=True)
         for uav_idx in range(env.num_uavs):
