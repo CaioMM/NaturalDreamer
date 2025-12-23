@@ -1,5 +1,5 @@
 environmentName: CarRacing-v3
-runName: run_01_reduced_network_dimensions_env_reset_fixed_reward_modified_ee_log_scale_tanh
+runName: run_02_without_fix_1_and_2
 seed: 1
 
 gradientSteps: 60000
@@ -7,7 +7,7 @@ replayRatio: 10
 saveMetrics: True        # Saves metrics at replayRatio interval
 saveCheckpoints: True
 checkpointInterval: 2000
-resume: True
+resume: False
 checkpointToLoad: 28k
 
 episodesBeforeStart: 5
