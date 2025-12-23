@@ -9,7 +9,7 @@ from envs       import getEnvProperties, GymPixelsProcessingWrapper, CleanGymWra
 from utils      import saveLossesToCSV, ensureParentFolders
 from UavUfpaEnv.envs.UavUfpaEnv import UavUfpaEnv
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
+# device = torch.device("cpu")
 
 def main(configFile):
     config = loadConfig(configFile)
