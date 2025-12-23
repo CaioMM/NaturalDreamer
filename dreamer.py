@@ -6,7 +6,7 @@ import os
 from scipy import stats
 
 from networks import RecurrentModel, PriorNet, PosteriorNet, RewardModel, ContinueModel, Encoder, Decoder, Actor, Critic
-from utils import computeLambdaValues, Moments
+from utils import computeLambdaValues, Moments, translateActions
 from buffer import ReplayBuffer
 from envs import flattenObservation
 import gymnasium as gym
@@ -106,7 +106,7 @@ class Dreamer:
 
         worldModelLoss =  reconstructionLoss + rewardLoss + klLoss # I think that the reconstruction loss is relatively a bit too high (11k) 
 
-        print(f"Gradient Steps: {self.totalGradientSteps} | World model loss: {worldModelLoss.item():.4f} | reconstruction loss: {reconstructionLoss.item():.4f} | reward loss: {rewardLoss.item():.4f} | KL loss: {klLoss.item():.4f} ")
+        # print(f"Gradient Steps: {self.totalGradientSteps} | World model loss: {worldModelLoss.item():.4f} | reconstruction loss: {reconstructionLoss.item():.4f} | reward loss: {rewardLoss.item():.4f} | KL loss: {klLoss.item():.4f} ")
         
         
         if self.config.useContinuationPrediction:
@@ -208,7 +208,9 @@ class Dreamer:
                 
                 nextObservation, reward, done, truncated, _ = env.step(actionNumpy)
                 done = done or truncated
-                # print(f"Step {stepCount}: reward {reward}, done {done}")
+                if stepCount == 99:
+                    actionTranslation = translateActions(actionNumpy.reshape(env.num_uavs, -1), env.num_uavs, actionSizePerUav=self.actionSize//env.num_uavs)
+                    print(f"Gradient Step: {self.totalGradientSteps} | reward {reward} | action taken at step 100: {actionTranslation} | uav positions: {[uav.grid_id for uav in env.uavs]}")
                 if isinstance(nextObservation, dict):
                     nextObservation = flattenObservation(nextObservation)
                 if not evaluation:
@@ -407,6 +409,18 @@ class Dreamer:
         plt.legend()
         plt.grid()
         plt.savefig(f'./plots/dreamer_{model_identifier}_energy_efficiency.png')
+
+        # save all metrics to a csv file
+        import pandas as pd
+        metrics_df = pd.DataFrame({
+            'coverage_mean': mean_coverage,
+            'coverage_std': std_coverage,
+            'energy_efficiency_mean': mean_energy_efficiency,
+            'energy_efficiency_std': std_energy_efficiency,
+            'power_consumption_mean': mean_power,
+            'power_consumption_std': std_power,
+        })
+        metrics_df.to_csv(f'./metrics/eval_dreamer_{model_identifier}_performance_metrics.csv', index=False) 
         return sum(scores)/numEpisodes if numEpisodes else None
     
 
