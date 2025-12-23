@@ -23,8 +23,8 @@ def main(configFile):
     videoFilenameBase       = os.path.join(config.folderNames.videosFolder,         runName)
     ensureParentFolders(metricsFilename, plotFilename, checkpointFilenameBase, videoFilenameBase)
     
-    env             = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName), (64, 64))))
-    envEvaluation   = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName, render_mode="rgb_array"), (64, 64))))
+    # env             = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName), (64, 64))))
+    # envEvaluation   = CleanGymWrapper(GymPixelsProcessingWrapper(gym.wrappers.ResizeObservation(gym.make(config.environmentName, render_mode="rgb_array"), (64, 64))))
     
     env1 = UavUfpaEnv(num_uavs=2, num_endnodes=7, grid_size=10, lambda_max=5, debug=False, evaluate_mode=True, seed=42)
     envEvaluation1 = UavUfpaEnv(num_uavs=2, num_endnodes=7, grid_size=10, lambda_max=5, debug=False, evaluate_mode=True, seed=42)
