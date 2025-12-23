@@ -1,9 +1,9 @@
 environmentName: CarRacing-v3
-runName: run_02_without_fix_1_and_2
+runName: run_01_replayratio100
 seed: 1
 
 gradientSteps: 60000
-replayRatio: 10
+replayRatio: 100
 saveMetrics: True        # Saves metrics at replayRatio interval
 saveCheckpoints: True
 checkpointInterval: 2000
