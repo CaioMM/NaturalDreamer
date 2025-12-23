@@ -155,6 +155,33 @@ def ensureParentFolders(*paths):
         if parentFolder and not os.path.exists(parentFolder):
             os.makedirs(parentFolder, exist_ok=True)
 
+def translateActions(actions, numUavs, actionSizePerUav=4):
+    movement_actions = {
+            0: 'north',   # Move north
+            1: 'south',   # Move south
+            2: 'east',    # Move east
+            3: 'west',    # Move west
+            4: 'hover'   # Hover
+        }
+    tp_values = [2, 5, 8, 11, 14]  # in dBm
+    bw_values = [125, 250, 500]  # in kHz
+    sfs = [7, 8, 9, 10, 11, 12]
+
+
+    translatedActions = []
+    for uavIdx in range(numUavs):
+        move_action, sf_idx, tp_idx, bw_idx = actions[uavIdx]
+        
+        translatedActions.append({
+            'movement': movement_actions[move_action],
+            'sf': sfs[sf_idx],
+            'tp': tp_values[tp_idx],
+            'bw': bw_values[bw_idx]
+        })
+        # print(f'UAV {uavIdx} Action - Movement: {movement_actions[move_action]}, SF: {sfs[sf_idx]}, TP: {tp_values[tp_idx]} dBm, BW: {bw_values[bw_idx]} kHz')
+    return translatedActions
+    
+
 
 class Moments(nn.Module):
     def __init__( self, device, decay = 0.99, min_=1, percentileLow = 0.05, percentileHigh = 0.95):
