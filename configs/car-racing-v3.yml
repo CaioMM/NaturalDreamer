@@ -2,13 +2,13 @@ environmentName: CarRacing-v3
 runName: run_01_replayratio100
 seed: 1
 
-gradientSteps: 60000
+gradientSteps: 6000000
 replayRatio: 100
 saveMetrics: True        # Saves metrics at replayRatio interval
 saveCheckpoints: True
 checkpointInterval: 2000
-resume: False
-checkpointToLoad: 28k
+resume: True
+checkpointToLoad: 60k
 
 episodesBeforeStart: 5
 numInteractionEpisodes: 1
